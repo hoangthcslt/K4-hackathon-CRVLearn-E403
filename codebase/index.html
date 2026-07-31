@@ -73,6 +73,17 @@ code,pre{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace}
 .rp-head b{font-size:14px}
 .rp-head small{display:block;color:var(--green);font-size:11px}
 .pagechip{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:3px 9px;white-space:nowrap}
+/* ---------- thread memory (đa chủ đề) ---------- */
+.threadbar{padding:7px 13px;border-bottom:1px solid var(--line);background:var(--chip);font-size:11.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.threadbar .lbl{color:var(--muted)}
+.threadchip{display:inline-flex;align-items:center;gap:5px;background:var(--panel);border:1px solid var(--blue);color:var(--blue);border-radius:20px;padding:3px 10px;font-weight:600}
+[data-theme="dark"] .threadchip{color:var(--blue-2);border-color:var(--blue-2)}
+.threadchip .n{opacity:.65;font-weight:400}
+.threadreason{color:var(--muted);font-style:italic}
+.confirmbox{background:var(--ok-bg);border:1px solid var(--ok-line);border-radius:9px;padding:9px 11px;margin:6px 0 12px;font-size:12.5px}
+.confirmbox .opts{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+.confirmbox button{border:1px solid var(--ok-line);background:var(--panel);color:var(--text);border-radius:8px;padding:5px 11px;font-size:12px}
+.confirmbox button.primary{background:var(--green);color:#fff;border-color:var(--green)}
 .tabs{display:flex;border-bottom:1px solid var(--line);background:var(--panel)}
 .tabs button{flex:1;border:0;background:transparent;color:var(--muted);padding:9px 4px;font-size:12px;border-bottom:2px solid transparent}
 .tabs button.on{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
@@ -215,6 +226,7 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
       <div><b>VLearn Tutor</b><small>Trợ lý học theo ngữ cảnh</small></div>
       <div class="pagechip" id="pageChip">Trang slide: 3</div>
     </div>
+    <div class="threadbar" id="threadBar" style="display:none"></div>
 
     <div class="engine">
       <div class="lab">Engine đang chạy — chọn để so sánh cùng một câu hỏi:</div>
@@ -419,6 +431,10 @@ const S = {
   engine:"ab", tab:"chat", provider:"gemini", key:"", model:"",
   doc:"d1", page:1, selection:null,
   history:[],            // [{role:'user'|'assistant', content, page}]
+  threads:[],            // [{label, entryKey, lastTurn, hits}] — chủ đề đang mở, chỉ dùng cho v2
+  activeThread:null,     // index trong S.threads đang "được nói tới" ở lượt gần nhất
+  pendingConfirm:null,   // {q, probe, cls, candidates:[idx,idx]} khi cần hỏi lại A hay B
+  skipThreadConfirm:false,
   lastTrace:null,
   log:[],
   busy:false
@@ -451,6 +467,50 @@ const SYS_V2 = SYS_COMMON + "\n\n"+
   "Nếu học viên hỏi lại về câu hỏi trước của họ, nhắc lại nguyên văn câu hỏi đó.";
 
 const REF_WORDS = ["nó","ý trên","ý đó","cái đó","phần đó","vậy còn","câu trên","câu ở trên","điều đó","chỗ đó","cách đó","như vậy","thế còn"];
+
+/* ---------------- thread memory: liên kết câu hỏi vào đúng "chủ đề đang mở" -------
+   Ý tưởng: user hỏi A (VD "LLM là gì") rồi hỏi B (VD "Automation khác gì Augmentation") —
+   đây là 2 chủ đề khác nhau trong cùng session. Nếu sau đó user hỏi mơ hồ ("vậy nó
+   dùng để làm gì"), hệ thống phải biết đang nói tới A hay B thay vì đoán bừa theo
+   thứ tự thời gian gần nhất. Heuristic: mỗi câu hỏi được gắn vào 1 thread dựa trên
+   từ khoá khớp với entry.key[] của corpus (không tốn quota, không cần LLM). Chỉ áp
+   dụng cho v2 — Baseline không có khái niệm "thread" vì nó còn chưa giữ được câu
+   hỏi cũ của user. */
+function matchThreads(q){
+  const qn = norm(q);
+  const scored = S.threads.map((t,i)=>{
+    const sc = t.keys.reduce((a,k)=>a + (qn.includes(norm(k))?1:0), 0);
+    return {i, t, sc};
+  }).filter(x=>x.sc>0).sort((a,b)=>b.sc-a.sc);
+  return scored;
+}
+/* tạo/khớp thread cho câu hỏi q dựa trên entry tài liệu tìm được — trả về index thread */
+function openOrUpdateThread(q, entry){
+  const qn = norm(q);
+  const existing = S.threads.findIndex(t=>t.entryKey===entry.doc+"#"+entry.page);
+  if(existing>=0){
+    S.threads[existing].hits++;
+    return existing;
+  }
+  S.threads.push({
+    label: (entry.title||q.slice(0,40)).slice(0,48),
+    entryKey: entry.doc+"#"+entry.page,
+    keys: entry.key||[],
+    hits: 1
+  });
+  return S.threads.length-1;
+}
+function renderThreadBar(reason){
+  const bar = $("#threadBar");
+  if(!S.threads.length || S.activeThread==null){ bar.style.display="none"; return; }
+  const t = S.threads[S.activeThread];
+  if(!t){ bar.style.display="none"; return; }
+  bar.style.display="flex";
+  bar.innerHTML = `<span class="lbl">🧵 Đang bàn về:</span>`+
+    `<span class="threadchip">${esc(t.label)} <span class="n">×${t.hits}</span></span>`+
+    (S.threads.length>1?`<span class="lbl">· ${S.threads.length} chủ đề đang mở trong phiên</span>`:"")+
+    (reason?`<span class="threadreason">— ${esc(reason)}</span>`:"");
+}
 
 /* ---------------- helpers ---------------- */
 const $  = s=>document.querySelector(s);
@@ -630,13 +690,41 @@ function buildBaseline(q){
   };
 }
 
+/* Xác định thread câu hỏi q đang bám vào, dựa trên các thread đang mở (S.threads).
+   Trả về {needConfirm:true, candidates} nếu ≥2 thread khớp ngang điểm và q có tham
+   chiếu ngầm (không đủ căn cứ để đoán) — đúng nguyên tắc G10 "thu hẹp phạm vi khi
+   nghi ngờ" thay vì tự tin chọn bừa 1 thread. */
+function resolveThread(q){
+  if(S.skipThreadConfirm) return {needConfirm:false};
+  if(!hasRef(q) || S.threads.length<2) return {needConfirm:false};
+  const scored = matchThreads(q);
+  /* Câu hỏi thuần tham chiếu ("ý đó", "nó"...) thường KHÔNG chứa từ khoá nào
+     của bất kỳ thread nào — đây chính là ca mơ hồ nhất (0 căn cứ để đoán),
+     nên vẫn cần hỏi lại giữa 2 thread gần nhất thay vì mặc định lấy thread
+     gần nhất theo thời gian. */
+  if(!scored.length){
+    if(S.threads.length<2) return {needConfirm:false};
+    const last2 = [S.threads.length-1, S.threads.length-2];
+    return {needConfirm:true, candidates:last2};
+  }
+  if(scored.length<2) return {needConfirm:false};
+  if(scored[0].sc===scored[1].sc) return {needConfirm:true, candidates:[scored[0].i, scored[1].i]};
+  return {needConfirm:false, best:scored[0].i};
+}
+
 /* ② v2: query rewriting (1 lời gọi LLM) + sliding window 6–8 lượt hai chiều */
 async function buildV2(q, saveQuota=false){
   const win  = Math.max(2, Math.min(16, +$("#winSize").value||8));
   const keep = S.history.slice(-win*2);
   let rewritten = null;
+  let threadReason = null;
+  /* Nếu user vừa xác nhận tay 1 thread (qua confirmbox A/B), ưu tiên tuyệt
+     đối khái niệm của thread đó khi rewrite — không để retrieve() tự đoán lại
+     và lỡ ra kết quả khác với cái user vừa chọn. */
+  const confirmedThread = (S.skipThreadConfirm && S.activeThread!=null) ? S.threads[S.activeThread] : null;
+  if(confirmedThread) rewritten = `${q} (về chủ đề "${confirmedThread.label}")`;
 
-  if($("#doRewrite").checked && hasRef(q) && keep.length){
+  if(!confirmedThread && $("#doRewrite").checked && hasRef(q) && keep.length){
     const prevUserQs = keep.filter(m=>m.role==="user").map(m=>m.content);
     const prevQ = prevUserQs[prevUserQs.length-1] || "";
 
@@ -673,6 +761,30 @@ async function buildV2(q, saveQuota=false){
     `CÂU HỎI CỦA HỌC VIÊN (Trang ${S.page}):\n${q}`+
     (rewritten?`\n\n(Diễn giải độc lập do hệ thống viết lại: ${rewritten})`:"")});
 
+  /* Thread memory: gắn câu hỏi này vào đúng "chủ đề đang mở" dựa trên entry tài
+     liệu vừa retrieve được. Không tốn quota (thuần heuristic JS). Chỉ cập nhật
+     S.threads ở đây — việc HỎI LẠI khi mơ hồ giữa 2 thread được xử lý riêng ở
+     send() TRƯỚC khi gọi buildV2(), nên tới đây nghĩa là đã có đủ căn cứ chọn 1
+     thread (hoặc user vừa xác nhận thủ công qua confirmbox). */
+  if(confirmedThread){
+    confirmedThread.hits++;
+    threadReason = `theo đúng chủ đề bạn vừa xác nhận: "${confirmedThread.label}"`;
+  }else{
+    const primaryEntry = chunks[0] || findEntryForPage(S.page);
+    const isNewThread = !S.threads.some(t=>t.entryKey===primaryEntry.doc+"#"+primaryEntry.page);
+    S.activeThread = openOrUpdateThread(q, primaryEntry);
+    /* Hiện lý do chọn thread ở MỌI câu trả lời khi có ≥2 chủ đề đang mở — không
+       chỉ giới hạn câu có tham chiếu ngầm — để luôn minh bạch AI đang bám vào
+       chủ đề nào, kể cả khi câu hỏi đã đủ rõ ràng để tự tin chọn. */
+    if(S.threads.length>1){
+      threadReason = hasRef(q)
+        ? `tiếp tục chủ đề "${S.threads[S.activeThread].label}" vì khớp từ khoá với các câu hỏi trước đó`
+        : isNewThread
+          ? `mở chủ đề mới "${S.threads[S.activeThread].label}" (khác với các chủ đề đang mở)`
+          : `khớp trực tiếp với chủ đề đang mở "${S.threads[S.activeThread].label}"`;
+    }
+  }
+
   return {
     system:SYS_V2, messages,
     meta:{
@@ -681,7 +793,9 @@ async function buildV2(q, saveQuota=false){
       assistantMsgsInPayload: keep.filter(m=>m.role==="assistant").length,
       retrievalQuery: rewritten||q,
       pages: chunks.map(c=>c.page),
-      rewritten
+      rewritten,
+      threadLabel: S.threads[S.activeThread]?.label || null,
+      threadReason
     }
   };
 }
@@ -712,6 +826,7 @@ function bubbleAns(kind,text,meta,g){
     <span class="tag ${isV2?"v2":"base"}">${isV2?"② CRVLearn v2 — có memory":"① Baseline — VLearn hiện tại"}</span>
     <p>${esc(text).replace(/\n{2,}/g,"</p><p>").replace(/\n/g,"<br>")}</p>
     ${meta.rewritten?`<div class="small" style="margin-top:8px">🔁 Query viết lại: <i>${esc(meta.rewritten)}</i></div>`:""}
+    ${meta.threadReason?`<div class="small" style="margin-top:4px">🧵 ${esc(meta.threadReason)}</div>`:""}
     <div class="conf"><div class="bar"><i style="width:${conf}%;background:${color}"></i></div>
       <b style="color:${color}">${conf}% · ${label}</b>
       <span class="pill" style="${g&&!g.pass?"background:var(--bad-bg);border-color:var(--bad-line);color:var(--red)":""}">${g?(g.pass?"● ĐẠT":"● KHÔNG ĐẠT"):"●"}</span></div>
@@ -764,6 +879,33 @@ async function send(q, probe, cls){
   if(S.busy || !q.trim()) return;
   S.busy = true; $("#btnSend").disabled = true;
   const thread = $("#thread");
+  const runBase = S.engine==="base" || S.engine==="ab";
+  const runV2   = S.engine==="v2"   || S.engine==="ab";
+
+  /* Đa-chủ-đề (chỉ áp dụng cho v2 — Baseline không có memory để mà mơ hồ giữa
+     2 thread): nếu câu hỏi tham chiếu ngầm khớp ngang điểm ≥2 chủ đề đang mở,
+     KHÔNG đoán bừa mà hỏi lại user "ý bạn là A hay B" — nguyên tắc G10. Dừng
+     lại ở đây, không gọi LLM nào, không đụng S.history/S.log cho tới khi user
+     xác nhận. */
+  if(runV2){
+    const r = resolveThread(q);
+    if(r.needConfirm){
+      thread.insertAdjacentHTML("beforeend", bubbleUser(q));
+      const [ia, ib] = r.candidates;
+      const A = S.threads[ia], B = S.threads[ib];
+      S.pendingConfirm = {q, probe, cls};
+      thread.insertAdjacentHTML("beforeend", `<div class="confirmbox">
+        <b>🧵 Câu hỏi này hơi mơ hồ</b> — bạn đang muốn hỏi tiếp về <b>"${esc(A.label)}"</b> hay <b>"${esc(B.label)}"</b>?
+        <div class="opts">
+          <button data-thread="${ia}">${esc(A.label)}</button>
+          <button data-thread="${ib}">${esc(B.label)}</button>
+        </div>
+      </div>`);
+      thread.scrollTop = 1e9;
+      return;
+    }
+  }
+
   thread.insertAdjacentHTML("beforeend", bubbleUser(q));
 
   const wait = document.createElement("div");
@@ -773,8 +915,6 @@ async function send(q, probe, cls){
   const trace = {q, page:S.page, cls, provider:S.provider, model:S.model,
                  ts:new Date().toISOString(), base:null, v2:null, realCalls:0};
   const saveQuota = $("#saveQuota").checked;
-  const runBase = S.engine==="base" || S.engine==="ab";
-  const runV2   = S.engine==="v2"   || S.engine==="ab";
   let html = "";
 
   try{
@@ -816,6 +956,7 @@ async function send(q, probe, cls){
               base: trace.base?{pass:trace.base.pass, why:trace.base.grade.why, text:trace.base.text}:null,
               v2:   trace.v2  ?{pass:trace.v2.pass,   why:trace.v2.grade.why,   text:trace.v2.text, rewritten:trace.v2.meta.rewritten}:null});
   renderCtx(); renderLog();
+  if(trace.v2) renderThreadBar(trace.v2.meta.threadReason);
   S.busy = false; $("#btnSend").disabled = false;
 }
 
@@ -848,6 +989,18 @@ $("#btnTheme").onclick = ()=>{
   document.documentElement.dataset.theme = dark?"light":"dark";
   $("#btnTheme").textContent = dark?"🌙 Tối":"☀️ Sáng";
 };
+/* xác nhận chủ đề A/B khi câu hỏi mơ hồ khớp ngang điểm ≥2 thread đang mở */
+$("#thread").addEventListener("click", e=>{
+  const b = e.target.closest("[data-thread]"); if(!b) return;
+  const pc = S.pendingConfirm; if(!pc) return;
+  const box = b.closest(".confirmbox");
+  S.activeThread = +b.dataset.thread;
+  const label = S.threads[S.activeThread].label;
+  box.outerHTML = `<div class="confirmbox"><b>✅ Đã chọn:</b> "${esc(label)}" — tiếp tục hỏi ${esc(pc.q)}</div>`;
+  S.pendingConfirm = null;
+  S.skipThreadConfirm = true;   // đã xác nhận thủ công, khỏi hỏi lại cho đúng lượt này
+  send(pc.q, pc.probe, pc.cls).finally(()=>{ S.skipThreadConfirm = false; });
+});
 $$(".tabs button").forEach(b=>b.onclick=()=>{
   $$(".tabs button").forEach(x=>x.classList.remove("on")); b.classList.add("on");
   $$(".pane").forEach(p=>p.classList.remove("on"));
@@ -914,6 +1067,7 @@ $("#presets").addEventListener("click", async e=>{
   setDoc(p.doc);
   setPage(p.page);
   S.history = []; $("#thread").innerHTML = "";
+  S.threads = []; S.activeThread = null; S.pendingConfirm = null; renderThreadBar();
   $$(".tabs button").forEach(x=>x.classList.remove("on"));
   $$(".pane").forEach(x=>x.classList.remove("on"));
   document.querySelector('.tabs button[data-tab="chat"]').classList.add("on");
