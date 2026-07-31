@@ -21,6 +21,8 @@ Trước đây `codebase/` dùng `mock-doc.js` (nội dung tự soạn). File đ
 
 **Cách trích xuất:** `pdftotext -enc UTF-8` (không dùng `-layout`, vì `-layout` làm vỡ dấu tiếng Việt do font nhúng trong PDF) → tách theo trang (`\f`) → lọc watermark trang trí "AI IN ACTION - HACKATHON" chồng chữ theo chiều dọc → sinh keyword từ tiêu đề + nội dung mỗi trang.
 
+**Nhận diện câu hỏi theo số trang:** mỗi mục trong `doc-data.js` đã mang `doc` + `page` + text của đúng một trang. Khi tạo context cho Tutor, `index.html` bọc từng mục bằng delimiter `BẮT ĐẦU TRANG N` / `KẾT THÚC TRANG N`. Câu hỏi có dạng `trang 5`, `slide 5`, `trang số 5`, nhiều trang hoặc khoảng trang được parse trước bước keyword retrieval, nên số trang được hỏi luôn ưu tiên hơn trang đang mở trên giao diện.
+
 **Giới hạn đã biết (không che giấu):** watermark trong PDF gốc chạy dọc theo lề và chồng lên chữ thật theo từng ký tự, nên một số trang còn sót vài chữ cái lẻ (VD "H", "AT", "N") xen giữa câu — dấu vết OCR/trích xuất tự nhiên, không ảnh hưởng ý nghĩa nội dung. Đây là đánh đổi hợp lý cho mốc prototype thay vì viết pipeline OCR layout-aware phức tạp.
 
 ## Mức prototype khai báo: **Mock retrieval, Real document**
@@ -77,7 +79,7 @@ Mọi lượt đều vào log, kể cả lượt v2 **KHÔNG ĐẠT** — số l
 | `PRESETS` | Golden set luồng follow-up, dựa trên nội dung thật |
 | `buildBaseline()` | Dựng payload thiếu prompt history — **chỗ vỡ** |
 | `buildV2()` | Rewrite + sliding window — **giải pháp** |
-| `retrieve()` / `findEntryForPage()` | Keyword match (mock) trên corpus thật |
+| `extractRequestedPages()` / `retrieve()` / `findEntryForPage()` | Parse số trang/slide trước, sau đó mới fallback keyword match trên corpus thật |
 | `renderSlide()` / `setDoc()` | Render slide + chuyển tài liệu Day 1 ↔ Day 2 |
 | `grade()` | Chấm tự động |
 | `callGemini()` / `callClaude()` / `callMock()` | 3 provider |
