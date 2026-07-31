@@ -33,7 +33,11 @@ code,pre{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace}
 .tbtn.on{background:var(--blue);color:#fff;border-color:var(--blue)}
 
 /* ---------- layout ---------- */
-.app{display:grid;grid-template-columns:240px minmax(0,1fr) minmax(0,460px);gap:0;height:calc(100vh - 49px)}
+.app{display:grid;grid-template-columns:240px minmax(0,1fr) 6px minmax(280px,460px);gap:0;height:calc(100vh - 49px)}
+.resizer{cursor:col-resize;background:var(--line);position:relative;z-index:5}
+.resizer:hover,.resizer.active{background:var(--blue)}
+.resizer::after{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:3px;height:26px;border-radius:3px;background:var(--muted);opacity:.5}
+.resizer:hover::after,.resizer.active::after{opacity:0}
 .col{overflow-y:auto;min-width:0}
 .sidebar{background:var(--panel);border-right:1px solid var(--line);padding:14px 12px}
 .center{padding:16px;background:var(--bg)}
@@ -156,6 +160,7 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
   .col{overflow:visible}
   .right{height:88vh;border-left:0;border-top:1px solid var(--line)}
   .sidebar{border-right:0;border-bottom:1px solid var(--line)}
+  .resizer{display:none}
 }
 </style>
 </head>
@@ -218,6 +223,9 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
       <p class="small" style="margin-top:8px">Đây là render PDF thật của trình duyệt (không qua trích xuất text). Muốn bôi đen dòng để hỏi AI thì quay lại tab <b>📖 Đọc (chọn text)</b>.</p>
     </div>
   </div>
+
+  <!-- kéo dãn để đổi bề rộng panel chat bên phải -->
+  <div class="resizer" id="resizer" title="Kéo để đổi bề rộng khung chat"></div>
 
   <!-- ================= RIGHT: TUTOR ================= -->
   <div class="col right">
@@ -521,6 +529,15 @@ function renderThreadBar(reason){
 /* ---------------- helpers ---------------- */
 const $  = s=>document.querySelector(s);
 const $$ = s=>[...document.querySelectorAll(s)];
+/* Cuộn khung chat xuống cuối để luôn theo dõi được câu hỏi/câu trả lời mới
+   nhất. #thread không tự cuộn (nó không có overflow riêng) — phần tử thật sự
+   cuộn là .pane#pane-chat (cha của nó, overflow-y:auto), nên phải set
+   scrollTop ở đó, không phải ở #thread. rAF để đợi DOM vừa chèn xong có chiều
+   cao thật trước khi cuộn (tránh cuộn hụt 1 nhịp). */
+function scrollChatToBottom(){
+  const pane = $("#pane-chat");
+  requestAnimationFrame(()=>{ pane.scrollTop = pane.scrollHeight; });
+}
 const esc = s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const tok = s=>Math.round(String(s).length/4);           // MOCK: ước lượng token
 const norm = s=>String(s).toLowerCase().normalize("NFC");
@@ -965,7 +982,7 @@ async function send(q, probe, cls){
           <button data-thread="${ib}">${esc(B.label)}</button>
         </div>
       </div>`);
-      thread.scrollTop = 1e9;
+      scrollChatToBottom();
       return;
     }
   }
@@ -974,7 +991,7 @@ async function send(q, probe, cls){
 
   const wait = document.createElement("div");
   wait.className = "bub-a"; wait.innerHTML = '<span class="small">⏳ đang gọi LLM…</span>';
-  thread.appendChild(wait); thread.scrollTop = 1e9;
+  thread.appendChild(wait); scrollChatToBottom();
 
   const trace = {q, page:S.page, cls, provider:S.provider, model:S.model,
                  ts:new Date().toISOString(), base:null, v2:null, realCalls:0};
@@ -1008,7 +1025,7 @@ async function send(q, probe, cls){
 
   wait.remove();
   thread.insertAdjacentHTML("beforeend", html);
-  thread.scrollTop = 1e9;
+  scrollChatToBottom();
 
   /* lịch sử chính thức của hội thoại lấy từ v2 (nếu có) để lượt sau nối tiếp được */
   const canon = (trace.v2||trace.base);
@@ -1053,6 +1070,37 @@ $("#btnTheme").onclick = ()=>{
   document.documentElement.dataset.theme = dark?"light":"dark";
   $("#btnTheme").textContent = dark?"🌙 Tối":"☀️ Sáng";
 };
+/* Kéo dãn panel chat (cột phải) — đổi bề rộng cột thứ 4 của .app grid, giữ
+   nguyên 240px sidebar + 6px resizer, phần center co giãn theo (minmax(0,1fr)).
+   Bề rộng lưu vào localStorage để giữ nguyên qua lần mở lại. */
+(function initResizer(){
+  const app = document.querySelector(".app");
+  const handle = $("#resizer");
+  let dragging = false;
+  const MIN_W = 280, MAX_W = 720;
+  function apply(w){
+    app.style.gridTemplateColumns = `240px minmax(0,1fr) 6px ${w}px`;
+  }
+  const saved = +localStorage.getItem("crvlearn_rightw");
+  if(saved && saved>=MIN_W && saved<=MAX_W) apply(saved);
+  handle.addEventListener("mousedown", e=>{
+    dragging = true; handle.classList.add("active");
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", e=>{
+    if(!dragging) return;
+    const w = Math.max(MIN_W, Math.min(MAX_W, app.getBoundingClientRect().right - e.clientX));
+    apply(w);
+  });
+  window.addEventListener("mouseup", ()=>{
+    if(!dragging) return;
+    dragging = false; handle.classList.remove("active");
+    document.body.style.userSelect = "";
+    const w = parseInt(getComputedStyle(app).gridTemplateColumns.split(" ").pop());
+    if(w) localStorage.setItem("crvlearn_rightw", w);
+  });
+})();
 /* xác nhận chủ đề A/B khi câu hỏi mơ hồ khớp ngang điểm ≥2 thread đang mở */
 $("#thread").addEventListener("click", e=>{
   const b = e.target.closest("[data-thread]"); if(!b) return;
