@@ -106,10 +106,10 @@ code,pre{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace}
 .pane.on{display:block}
 
 /* engine switch */
-.engine{display:flex;gap:6px;padding:9px 13px;border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center}
-.engine .lab{font-size:11px;color:var(--muted);width:100%}
-.eng{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:20px;padding:4px 11px;font-size:11.5px}
+.engine{display:flex;gap:6px;padding:8px 13px;border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center}
+.eng{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:20px;padding:4px 11px;font-size:11.5px;flex:none}
 .eng.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.engine .threadbar{padding:0;border:0;background:transparent;flex:1 1 auto;justify-content:flex-end;min-width:0}
 
 /* chat */
 .ctx-lab{font-size:10.5px;color:var(--muted);font-family:ui-monospace,monospace;margin:2px 0 4px}
@@ -242,7 +242,7 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
   <div class="col right">
     <div class="rp-head">
       <div class="av">🤖</div>
-      <div><b>VLearn Tutor</b><small>Trợ lý học theo ngữ cảnh</small></div>
+      <div><b>VLearn Tutor</b><small id="chatHint">chế độ mô phỏng</small></div>
       <div style="margin-left:auto;display:flex;align-items:center;gap:6px;position:relative">
         <button class="tbtn" id="btnHistory" title="Lịch sử trò chuyện">🕐</button>
         <button class="tbtn" id="btnNewChat" title="Đoạn chat mới">➕</button>
@@ -253,13 +253,12 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
         </div>
       </div>
     </div>
-    <div class="threadbar" id="threadBar" style="display:none"></div>
 
     <div class="engine">
-      <div class="lab">Engine đang chạy — chọn để so sánh cùng một câu hỏi:</div>
-      <button class="eng" data-eng="base">① Baseline (VLearn hiện tại)</button>
-      <button class="eng" data-eng="v2">② CRVLearn v2 (Memory)</button>
-      <button class="eng on" data-eng="ab">⚖️ Chạy cả hai (A/B)</button>
+      <button class="eng" data-eng="base" title="Baseline — VLearn hiện tại">① Baseline</button>
+      <button class="eng" data-eng="v2" title="CRVLearn v2 — có memory">② v2</button>
+      <button class="eng on" data-eng="ab" title="Chạy cả hai để so sánh (A/B)">⚖️ A/B</button>
+      <div class="threadbar" id="threadBar" style="display:none"></div>
     </div>
 
     <div class="tabs">
@@ -272,10 +271,6 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
 
     <!-- ---- CHAT ---- -->
     <div class="pane on" id="pane-chat">
-      <div class="hint" id="chatHint">
-        Chưa cấu hình API key → đang chạy <b>chế độ mô phỏng</b> (không phải AI thật).
-        Vào tab <b>⚙️</b> dán key để có <b>lời gọi AI chạy thật</b>.
-      </div>
       <div id="thread"></div>
     </div>
 
@@ -1364,9 +1359,12 @@ document.addEventListener("click", e=>{
 });
 
 function updateHint(){
-  $("#chatHint").innerHTML = (S.key && S.provider!=="mock")
-    ? `Đang chạy <b>AI thật</b> — ${esc(S.provider)} · <code>${esc(S.model)}</code>. Mở tab <b>Context</b> sau mỗi lượt để xem payload.`
-    : `Chưa cấu hình API key → đang chạy <b>chế độ mô phỏng</b> (không phải AI thật). Vào tab <b>⚙️</b> dán key để có <b>lời gọi AI chạy thật</b>.`;
+  const el = $("#chatHint");
+  const real = S.key && S.provider!=="mock";
+  el.textContent = real ? `🟢 AI thật — ${S.provider} · ${S.model}` : `⚪ Mô phỏng — dán key ở tab ⚙️ để bật AI thật`;
+  el.title = real
+    ? "Đang gọi AI thật. Mở tab Context sau mỗi lượt để xem payload."
+    : "Chưa cấu hình API key nên đang chạy chế độ mô phỏng, không phải AI thật.";
 }
 
 /* ---------------- init ---------------- */
