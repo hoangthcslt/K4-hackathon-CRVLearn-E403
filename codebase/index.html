@@ -73,6 +73,17 @@ code,pre{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace}
 .rp-head b{font-size:14px}
 .rp-head small{display:block;color:var(--green);font-size:11px}
 .pagechip{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:3px 9px;white-space:nowrap}
+.history-panel{position:absolute;top:100%;right:0;margin-top:6px;width:270px;max-height:320px;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);z-index:30;padding:8px}
+.history-panel__title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding:4px 6px 8px}
+.history-item{display:flex;align-items:flex-start;gap:6px;padding:7px 8px;border-radius:8px;cursor:pointer;font-size:12px}
+.history-item:hover{background:var(--chip)}
+.history-item.active{background:var(--chip);outline:1px solid var(--blue);outline-offset:-1px}
+.history-item .hi-body{flex:1;min-width:0}
+.history-item .hi-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.history-item .hi-meta{color:var(--muted);font-size:10.5px;margin-top:2px}
+.history-item .hi-del{border:0;background:transparent;color:var(--muted);font-size:12px;padding:2px 5px;border-radius:5px;flex:none}
+.history-item .hi-del:hover{background:var(--bad-bg);color:var(--red)}
+.history-empty{font-size:12px;color:var(--muted);padding:10px 6px}
 .tabs{display:flex;border-bottom:1px solid var(--line);background:var(--panel)}
 .tabs button{flex:1;border:0;background:transparent;color:var(--muted);padding:9px 4px;font-size:12px;border-bottom:2px solid transparent}
 .tabs button.on{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
@@ -213,7 +224,15 @@ label.fl{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}
     <div class="rp-head">
       <div class="av">🤖</div>
       <div><b>VLearn Tutor</b><small>Trợ lý học theo ngữ cảnh</small></div>
-      <div class="pagechip" id="pageChip">Trang slide: 3</div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:6px;position:relative">
+        <button class="tbtn" id="btnHistory" title="Lịch sử trò chuyện">🕐</button>
+        <button class="tbtn" id="btnNewChat" title="Đoạn chat mới">➕</button>
+        <div class="pagechip" id="pageChip" style="margin-left:6px">Trang slide: 3</div>
+        <div id="historyPanel" class="history-panel" hidden>
+          <div class="history-panel__title">Lịch sử trò chuyện</div>
+          <div id="historyList"></div>
+        </div>
+      </div>
     </div>
 
     <div class="engine">
@@ -421,7 +440,9 @@ const PRESETS = [
 const S = {
   engine:"ab", tab:"chat", provider:"gemini", key:"", model:"",
   doc:"d1", page:1, selection:null,
-  history:[],            // [{role:'user'|'assistant', content, page}]
+  history:[],            // [{role:'user'|'assistant', content, page}] — phiên đang mở
+  sessionId:null,        // id phiên chat đang active
+  sessions:[],           // [{id, title, doc, page, history, updatedAt}] — mọi phiên đã lưu
   lastTrace:null,
   log:[],
   busy:false
@@ -763,8 +784,15 @@ function grade(answer, probe){
 }
 
 /* ---------------- render ---------------- */
-function bubbleUser(q){
-  return `<div class="ctx-lab">Ngữ cảnh: Slide trang ${S.page}</div><div class="bub-u">${esc(q)}</div>`;
+function bubbleUser(q, page=S.page){
+  return `<div class="ctx-lab">Ngữ cảnh: Slide trang ${page}</div><div class="bub-u">${esc(q)}</div>`;
+}
+function bubbleRestored(text, page){
+  return `<div class="ctx-lab">Ngữ cảnh: Slide trang ${page}</div>
+    <div class="bub-a" style="opacity:.82">
+      <span class="tag" style="background:var(--chip);color:var(--muted);border:1px solid var(--line)">🔄 Khôi phục từ phiên trước</span>
+      <p>${esc(text).replace(/\n{2,}/g,"</p><p>").replace(/\n/g,"<br>")}</p>
+    </div>`;
 }
 function bubbleAns(kind,text,meta,g){
   const isV2 = kind==="v2";
@@ -823,6 +851,113 @@ function renderPresets(){
       <span>Q1: ${esc(p.turns[0])}<br>Q2: ${esc(p.turns[1])}</span></button>`).join("");
 }
 
+/* ---------------- nhiều phiên chat: lưu, liệt kê, chuyển, xoá (localStorage) ----------------
+   Khắc phục feedback validation (Nguyễn Công Minh): "Không thấy lưu log chat cũ
+   (tải lại trang bị mất sạch)" — nâng cấp thêm theo yêu cầu: chọn được phiên muốn
+   xem lại, hoặc mở đoạn chat mới (không mất phiên cũ). Chỉ lưu S.sessions/S.history
+   (mạch hội thoại) — KHÔNG đụng tới S.log, vì S.log là sổ chấm điểm cộng dồn dùng
+   cho tab Eval, có nút "Xoá log" riêng và không tương ứng 1-1 với một cuộc hội thoại. */
+const SESSIONS_KEY = "crvlearn_sessions";
+const newSessionId = ()=> "s"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const sessionTitleFrom = history=>{
+  const firstQ = history.find(m=>m.role==="user");
+  return firstQ ? firstQ.content.slice(0,40) : "Cuộc trò chuyện mới";
+};
+function persistSessions(){
+  try{ localStorage.setItem(SESSIONS_KEY, JSON.stringify({activeId:S.sessionId, sessions:S.sessions})); }catch(e){}
+}
+/* ghi (hoặc tạo) bản ghi phiên đang active trong S.sessions — gọi TRƯỚC khi đổi S.doc/S.page/S.history */
+function syncActiveSession(){
+  if(!S.history.length) return;                 // phiên trống thì chưa cần xuất hiện trong danh sách
+  let s = S.sessions.find(x=>x.id===S.sessionId);
+  if(!s){ s = {id:S.sessionId}; S.sessions.unshift(s); }
+  s.title = sessionTitleFrom(S.history);
+  s.doc = S.doc; s.page = S.page; s.history = S.history; s.updatedAt = Date.now();
+  persistSessions();
+}
+function relTime(ts){
+  const diffMin = Math.max(0, Math.round((Date.now()-ts)/60000));
+  if(diffMin<1) return "vừa xong";
+  if(diffMin<60) return diffMin+" phút trước";
+  const diffH = Math.round(diffMin/60);
+  if(diffH<24) return diffH+" giờ trước";
+  return Math.round(diffH/24)+" ngày trước";
+}
+function openThreadFromHistory(history){
+  const thread = $("#thread");
+  thread.innerHTML = "";
+  history.forEach(m=>{
+    thread.insertAdjacentHTML("beforeend",
+      m.role==="user" ? bubbleUser(m.content, m.page) : bubbleRestored(m.content, m.page));
+  });
+  thread.scrollTop = 1e9;
+}
+function renderHistoryList(){
+  const list = $("#historyList");
+  if(!S.sessions.length){ list.innerHTML = '<div class="history-empty">Chưa có cuộc trò chuyện đã lưu.</div>'; return; }
+  const sorted = [...S.sessions].sort((a,b)=>b.updatedAt-a.updatedAt);
+  list.innerHTML = sorted.map(s=>{
+    const docName = (window.DOC_META && window.DOC_META[s.doc] && window.DOC_META[s.doc].name) || s.doc;
+    return `<div class="history-item ${s.id===S.sessionId?"active":""}" data-id="${s.id}">
+      <div class="hi-body">
+        <div class="hi-title">${esc(s.title||"Cuộc trò chuyện mới")}</div>
+        <div class="hi-meta">${esc(docName)} · trang ${s.page} · ${relTime(s.updatedAt)}</div>
+      </div>
+      <button class="hi-del" data-del="${s.id}" title="Xoá cuộc trò chuyện này">✕</button>
+    </div>`;
+  }).join("");
+}
+function toggleHistoryPanel(force){
+  const panel = $("#historyPanel");
+  const show = force!==undefined ? force : panel.hidden;
+  if(show) renderHistoryList();
+  panel.hidden = !show;
+}
+function switchToSession(id){
+  const s = S.sessions.find(x=>x.id===id);
+  if(!s || id===S.sessionId){ toggleHistoryPanel(false); return; }
+  syncActiveSession();                 // chốt lại phiên đang xem trước khi rời đi
+  S.sessionId = s.id; S.history = s.history.slice();
+  setDoc(s.doc); setPage(s.page);
+  openThreadFromHistory(S.history);
+  S.lastTrace = null; renderCtx();
+  persistSessions();
+  toggleHistoryPanel(false);
+}
+/* ➕ đoạn chat mới: chốt phiên đang xem (nếu có nội dung) vào danh sách rồi mở phiên trắng */
+function startNewSession(){
+  syncActiveSession();
+  S.sessionId = newSessionId();
+  S.history = []; S.lastTrace = null;
+  $("#thread").innerHTML = "";
+  renderCtx();
+  persistSessions();
+  toggleHistoryPanel(false);
+}
+function deleteSession(id){
+  S.sessions = S.sessions.filter(x=>x.id!==id);
+  if(id===S.sessionId) startNewSession();
+  else{ persistSessions(); renderHistoryList(); }
+}
+/* trả về true nếu khôi phục được một phiên đang active có sẵn lịch sử */
+function loadSessionsOnInit(){
+  try{ localStorage.removeItem("crvlearn_chat_session"); }catch(e){} // dọn key bản cũ (1-phiên)
+  let saved;
+  try{ saved = JSON.parse(localStorage.getItem(SESSIONS_KEY)||"null"); }catch(e){ return false; }
+  if(!saved || !Array.isArray(saved.sessions) || !saved.sessions.length) return false;
+  S.sessions = saved.sessions;
+  const active = S.sessions.find(x=>x.id===saved.activeId)
+    || [...S.sessions].sort((a,b)=>b.updatedAt-a.updatedAt)[0];
+  if(!active) return false;
+  S.sessionId = active.id; S.history = active.history;
+  setDoc(active.doc); setPage(active.page);
+  openThreadFromHistory(S.history);
+  const turns = S.history.filter(m=>m.role==="user").length;
+  $("#thread").insertAdjacentHTML("afterbegin",
+    `<div class="small" style="margin:2px 0 10px;color:var(--muted)">🔄 Đã khôi phục ${turns} lượt hội thoại từ phiên trước — bấm <b>➕</b> để mở đoạn chat mới, hoặc <b>🕐</b> để xem các đoạn chat khác.</div>`);
+  return true;
+}
+
 /* ---------------- luồng gửi ---------------- */
 async function send(q, probe, cls){
   if(S.busy || !q.trim()) return;
@@ -874,6 +1009,7 @@ async function send(q, probe, cls){
   const canon = (trace.v2||trace.base);
   S.history.push({role:"user", content:q, page:S.page});
   if(canon) S.history.push({role:"assistant", content:canon.text, page:S.page});
+  syncActiveSession();
 
   S.lastTrace = trace;
   S.log.push({q, page:S.page, cls, ts:trace.ts,
@@ -975,9 +1111,9 @@ $("#input").addEventListener("keydown",e=>{
 $("#presets").addEventListener("click", async e=>{
   const b = e.target.closest("[data-preset]"); if(!b) return;
   const p = PRESETS.find(x=>x.id===b.dataset.preset);
+  startNewSession();      // chốt phiên đang xem (nếu có) vào lịch sử trước khi đổi tài liệu/trang cho preset
   setDoc(p.doc);
   setPage(p.page);
-  S.history = []; $("#thread").innerHTML = "";
   $$(".tabs button").forEach(x=>x.classList.remove("on"));
   $$(".pane").forEach(x=>x.classList.remove("on"));
   document.querySelector('.tabs button[data-tab="chat"]').classList.add("on");
@@ -1008,6 +1144,18 @@ $("#btnTest").onclick = async ()=>{
 $("#btnExportMd").onclick   = exportMd;
 $("#btnExportJson").onclick = ()=>download("eval-run-"+Date.now()+".json", JSON.stringify(S.log,null,2), "application/json");
 $("#btnClearLog").onclick   = ()=>{ S.log=[]; renderLog(); };
+$("#btnNewChat").onclick = ()=> startNewSession();
+$("#btnHistory").onclick = e=>{ e.stopPropagation(); toggleHistoryPanel(); };
+$("#historyList").addEventListener("click", e=>{
+  const del = e.target.closest("[data-del]");
+  if(del){ e.stopPropagation(); deleteSession(del.dataset.del); return; }
+  const item = e.target.closest("[data-id]");
+  if(item) switchToSession(item.dataset.id);
+});
+document.addEventListener("click", e=>{
+  const panel = $("#historyPanel");
+  if(!panel.hidden && !panel.contains(e.target) && e.target.id!=="btnHistory") toggleHistoryPanel(false);
+});
 
 function updateHint(){
   $("#chatHint").innerHTML = (S.key && S.provider!=="mock")
@@ -1025,7 +1173,11 @@ function updateHint(){
   }catch(e){ S.model = DEFAULT_MODEL[S.provider]; }
   $("#modelId").value = S.model;
   $("#keyHint").textContent = S.provider==="gemini" ? "(aistudio.google.com/apikey)" : S.provider==="claude" ? "(sk-ant-…)" : "(không cần)";
-  setDoc("d1"); renderPresets(); renderLog(); updateHint();
+  if(!loadSessionsOnInit()){
+    S.sessionId = newSessionId();
+    setDoc("d1");
+  }
+  renderPresets(); renderLog(); updateHint();
 })();
 </script>
 <script src="privacy-rules.js"></script>
